@@ -43,7 +43,7 @@ do
             --task $task \
             --num-envs 16 \
             --num-steps 2048 \
-            --acton-repeat 2 \
+            --action-repeat 2 \
             --total-timesteps 510000 \
             --logdir logdir/${DATE}_${METHOD}_${task#dmc_}_$seed \
             --seed $seed \
