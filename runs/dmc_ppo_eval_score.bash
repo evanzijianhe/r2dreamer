@@ -39,18 +39,11 @@ for task in "${tasks[@]}"
 do
     for seed in $(seq $SEED_START $SEED_STEP $SEED_END)
     do
-        CUDA_VISIBLE_DEVICES=$GPU_ID MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$GPU_ID python cleanrl_ppo_dmcontrol.py \
-            --task $task \
-            --num-envs 16 \
-            --num-steps 64 \
-            --action-repeat 2 \
-            --total-timesteps 510000 \
-            --logdir logdir/${DATE}_${METHOD}_${task#dmc_}_$seed \
-            --seed $seed \
-            --save-model \
-            --norm-obs \
-            --norm-reward \
-            --hidden-size 64
+        python evals/plot_training_progress.py \
+            --task ${task#dmc_} \
+            --series ppo=logdir/ppo \
+            --series-tag ppo=eval/episodic_return \
+            --out logdir/plots/ppo_${task#dmc_}_eval_score.png
     done
 done
 

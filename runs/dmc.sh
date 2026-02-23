@@ -6,7 +6,7 @@ DATE=$(date +%m%d) # auto complete
 SEED_START=0
 SEED_END=400
 SEED_STEP=100
-MODAL=vision # vision/proprio
+MODAL=proprio # vision/proprio
 METHOD=r2dreamer
 
 # ==== Tasks ====
