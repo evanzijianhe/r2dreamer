@@ -41,9 +41,10 @@ do
     do
         CUDA_VISIBLE_DEVICES=$GPU_ID MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$GPU_ID python cleanrl_ppo_dmcontrol.py \
             --task $task \
-            --num-envs 1 \
+            --num-envs 16 \
             --num-steps 2048 \
-            --total-timesteps 500000 \
+            --acton-repeat 2 \
+            --total-timesteps 510000 \
             --logdir logdir/${DATE}_${METHOD}_${task#dmc_}_$seed \
             --seed $seed \
             --save-model \
