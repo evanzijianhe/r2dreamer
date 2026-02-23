@@ -62,6 +62,16 @@ def parse_args():
     parser.add_argument("--no-cuda", dest="cuda", action="store_false")
     parser.add_argument("--torch-deterministic", action="store_true", default=False)
     parser.add_argument("--logdir", type=str, default="logdir/ppo_dmc")
+    parser.add_argument("--save-model", action="store_true", default=False)
+    parser.add_argument(
+        "--save-every-updates",
+        type=int,
+        default=0,
+        help="Save checkpoint every N PPO updates. 0 disables periodic saves.",
+    )
+    parser.add_argument("--eval-episodes", type=int, default=10)
+    parser.add_argument("--eval-deterministic", action="store_true", default=True)
+    parser.add_argument("--no-eval-deterministic", dest="eval_deterministic", action="store_false")
     return parser.parse_args()
 
 
@@ -100,6 +110,18 @@ class RunningMeanStd:
         self.var = new_var
         self.count = total_count
 
+    def state_dict(self):
+        return {
+            "mean": self.mean.copy(),
+            "var": self.var.copy(),
+            "count": float(self.count),
+        }
+
+    def load_state_dict(self, state):
+        self.mean = np.asarray(state["mean"], dtype=np.float64)
+        self.var = np.asarray(state["var"], dtype=np.float64)
+        self.count = float(state["count"])
+
 
 class VecNormalize:
     def __init__(self, obs_shape, num_envs, gamma, normalize_obs, normalize_reward, clip_obs, clip_reward, eps=1e-8):
@@ -137,6 +159,30 @@ class VecNormalize:
         rewards = np.clip(rewards, -self.clip_reward, self.clip_reward)
         self.returns[dones] = 0.0
         return rewards.astype(np.float32)
+
+    def state_dict(self):
+        return {
+            "normalize_obs": self.normalize_obs,
+            "normalize_reward": self.normalize_reward,
+            "clip_obs": float(self.clip_obs),
+            "clip_reward": float(self.clip_reward),
+            "eps": float(self.eps),
+            "gamma": float(self.gamma),
+            "returns": self.returns.copy(),
+            "obs_rms": self.obs_rms.state_dict(),
+            "ret_rms": self.ret_rms.state_dict(),
+        }
+
+    def load_state_dict(self, state):
+        self.normalize_obs = bool(state["normalize_obs"])
+        self.normalize_reward = bool(state["normalize_reward"])
+        self.clip_obs = float(state["clip_obs"])
+        self.clip_reward = float(state["clip_reward"])
+        self.eps = float(state["eps"])
+        self.gamma = float(state["gamma"])
+        self.returns = np.asarray(state["returns"], dtype=np.float64)
+        self.obs_rms.load_state_dict(state["obs_rms"])
+        self.ret_rms.load_state_dict(state["ret_rms"])
 
 
 class Agent(nn.Module):
@@ -254,6 +300,64 @@ def normalize_task(task):
             "for example: walker_walk, reacher_easy, cheetah_run."
         )
     return normalized
+
+def save_checkpoint(path, agent, optimizer, vecnorm, args, global_step, update):
+    payload = {
+        "agent_state_dict": agent.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "vecnorm_state_dict": vecnorm.state_dict(),
+        "args": vars(args),
+        "global_step": int(global_step),
+        "update": int(update),
+    }
+    torch.save(payload, path)
+
+
+def evaluate(
+    agent,
+    task,
+    action_repeat,
+    time_limit,
+    seed,
+    eval_episodes,
+    device,
+    vecnorm,
+    deterministic=True,
+):
+    eval_env = DMControlVectorEnv(
+        task=task,
+        num_envs=1,
+        action_repeat=action_repeat,
+        time_limit=time_limit,
+        seed=seed + 10_000,
+    )
+    action_low = torch.as_tensor(eval_env.single_action_space.low, dtype=torch.float32, device=device)
+    action_high = torch.as_tensor(eval_env.single_action_space.high, dtype=torch.float32, device=device)
+
+    episode_returns = []
+    was_training = agent.training
+    agent.eval()
+    obs_np = eval_env.reset()
+    obs_np = vecnorm.normalize_observation(obs_np, update=False)
+
+    while len(episode_returns) < eval_episodes:
+        obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            if deterministic:
+                action_t = agent.actor_mean(obs_t)
+            else:
+                action_t, _, _, _ = agent.get_action_and_value(obs_t)
+            action_t = torch.clamp(action_t, action_low, action_high)
+        obs_np, _, _, infos = eval_env.step(action_t.cpu().numpy())
+        obs_np = vecnorm.normalize_observation(obs_np, update=False)
+        ret = infos["episode_return"][0]
+        if not np.isnan(ret):
+            episode_returns.append(float(ret))
+
+    if was_training:
+        agent.train()
+    eval_env.close()
+    return episode_returns
 
 def main():
     args = parse_args()
@@ -467,7 +571,50 @@ def main():
             f"policy_loss={pg_loss.item():.4f} value_loss={v_loss.item():.4f} "
             f"approx_kl={approx_kl.item():.5f} sps={sps}"
         )
+        if args.save_every_updates > 0 and (update % args.save_every_updates == 0):
+            ckpt_path = os.path.join(run_dir, f"ckpt_update_{update:06d}.pt")
+            save_checkpoint(
+                ckpt_path,
+                agent=agent,
+                optimizer=optimizer,
+                vecnorm=vecnorm,
+                args=args,
+                global_step=global_step,
+                update=update,
+            )
+            print(f"Saved checkpoint: {ckpt_path}")
     
+    if args.save_model:
+        model_path = os.path.join(run_dir, "final.pt")
+        save_checkpoint(
+            model_path,
+            agent=agent,
+            optimizer=optimizer,
+            vecnorm=vecnorm,
+            args=args,
+            global_step=global_step,
+            update=num_updates,
+        )
+        print(f"Model saved to {model_path}")
+
+    if args.eval_episodes > 0:
+        episodic_returns = evaluate(
+            agent=agent,
+            task=task,
+            action_repeat=args.action_repeat,
+            time_limit=args.time_limit,
+            seed=args.seed,
+            eval_episodes=args.eval_episodes,
+            device=device,
+            vecnorm=vecnorm,
+            deterministic=args.eval_deterministic,
+        )
+        for idx, episodic_return in enumerate(episodic_returns):
+            writer.add_scalar("eval/episodic_return", episodic_return, idx)
+        eval_mean = float(np.mean(episodic_returns))
+        eval_std = float(np.std(episodic_returns))
+        print(f"Eval ({args.eval_episodes} eps): mean={eval_mean:.3f} std={eval_std:.3f}")
+
 
     envs.close()
     writer.close()
