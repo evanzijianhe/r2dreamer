@@ -29,6 +29,23 @@ Switching algorithms:
 python3 train.py model.rep_loss=r2dreamer
 ```
 
+PPO baseline on DMC (proprio):
+
+```bash
+# Example: walker_walk with action_repeat=2 and 510k env-steps budget
+python3 cleanrl_ppo_dmcontrol.py \
+  --task reacher-easy \
+  --total-timesteps 510000 \
+  --num-envs 16 \
+  --num-steps 256 \
+  --action-repeat 1 \
+  --count-agent-steps \
+  --norm-obs \
+  --norm-reward \
+  --hidden-size 64 \
+  --logdir logdir/ppo_dmc
+```
+
 For easier code reading, inline tensor shape annotations are provided. See [`docs/tensor_shapes.md`](docs/tensor_shapes.md).
 
 
